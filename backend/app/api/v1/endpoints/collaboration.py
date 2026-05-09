@@ -1,0 +1,265 @@
+"""
+OmniSynth - Collaboration API Endpoints
+Workspaces, members, comments, real-time collaboration
+"""
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc
+from typing import List, Optional, Dict
+from uuid import UUID
+import uuid
+import json
+from datetime import datetime
+from pydantic import BaseModel
+
+from app.core.database import get_db
+from app.models.user import User
+from app.models.collaboration import CollaborationWorkspace, WorkspaceMember, WorkspaceComment, WorkspaceRole, Notification
+from app.middleware.auth import get_current_user
+from loguru import logger
+
+router = APIRouter()
+
+# WebSocket connection manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, workspace_id: str):
+        await websocket.accept()
+        if workspace_id not in self.active_connections:
+            self.active_connections[workspace_id] = []
+        self.active_connections[workspace_id].append(websocket)
+
+    def disconnect(self, websocket: WebSocket, workspace_id: str):
+        if workspace_id in self.active_connections:
+            self.active_connections[workspace_id].remove(websocket)
+
+    async def broadcast(self, message: dict, workspace_id: str):
+        if workspace_id in self.active_connections:
+            dead = []
+            for connection in self.active_connections[workspace_id]:
+                try:
+                    await connection.send_text(json.dumps(message))
+                except Exception:
+                    dead.append(connection)
+            for d in dead:
+                self.active_connections[workspace_id].remove(d)
+
+
+manager = ConnectionManager()
+
+
+class WorkspaceCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    is_public: bool = False
+
+
+class WorkspaceUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_public: Optional[bool] = None
+
+
+class CommentCreate(BaseModel):
+    content: str
+    parent_id: Optional[UUID] = None
+
+
+@router.post("/workspaces", status_code=201)
+async def create_workspace(
+    data: WorkspaceCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    workspace = CollaborationWorkspace(
+        id=uuid.uuid4(),
+        name=data.name,
+        description=data.description,
+        owner_id=current_user.id,
+        is_public=data.is_public,
+    )
+    db.add(workspace)
+    await db.flush()
+
+    member = WorkspaceMember(
+        id=uuid.uuid4(),
+        workspace_id=workspace.id,
+        user_id=current_user.id,
+        role=WorkspaceRole.OWNER,
+    )
+    db.add(member)
+    await db.commit()
+    await db.refresh(workspace)
+    return {"id": str(workspace.id), "name": workspace.name, "description": workspace.description, "created_at": workspace.created_at.isoformat()}
+
+
+@router.get("/workspaces")
+async def list_workspaces(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(WorkspaceMember).where(WorkspaceMember.user_id == current_user.id, WorkspaceMember.is_active == True)
+    )
+    memberships = result.scalars().all()
+    workspace_ids = [m.workspace_id for m in memberships]
+
+    workspaces = []
+    for wid in workspace_ids:
+        ws_result = await db.execute(select(CollaborationWorkspace).where(CollaborationWorkspace.id == wid))
+        ws = ws_result.scalar_one_or_none()
+        if ws:
+            workspaces.append({
+                "id": str(ws.id),
+                "name": ws.name,
+                "description": ws.description,
+                "is_public": ws.is_public,
+                "created_at": ws.created_at.isoformat(),
+            })
+    return workspaces
+
+
+@router.post("/workspaces/{workspace_id}/members")
+async def add_member(
+    workspace_id: UUID,
+    user_email: str,
+    role: WorkspaceRole = WorkspaceRole.EDITOR,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Verify workspace ownership
+    ws_result = await db.execute(select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id))
+    workspace = ws_result.scalar_one_or_none()
+    if not workspace or workspace.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Find user by email
+    from app.models.user import User as UserModel
+    user_result = await db.execute(select(UserModel).where(UserModel.email == user_email))
+    target_user = user_result.scalar_one_or_none()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    member = WorkspaceMember(
+        id=uuid.uuid4(),
+        workspace_id=workspace_id,
+        user_id=target_user.id,
+        role=role,
+    )
+    db.add(member)
+    await db.commit()
+    return {"message": f"Added {user_email} as {role}"}
+
+
+@router.post("/workspaces/{workspace_id}/comments")
+async def add_comment(
+    workspace_id: UUID,
+    data: CommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    comment = WorkspaceComment(
+        id=uuid.uuid4(),
+        workspace_id=workspace_id,
+        user_id=current_user.id,
+        content=data.content,
+        parent_id=data.parent_id,
+    )
+    db.add(comment)
+    await db.commit()
+    await db.refresh(comment)
+
+    # Broadcast to WebSocket clients
+    await manager.broadcast({
+        "type": "new_comment",
+        "comment_id": str(comment.id),
+        "user": current_user.username,
+        "content": data.content[:200],
+        "timestamp": datetime.utcnow().isoformat(),
+    }, str(workspace_id))
+
+    return {"id": str(comment.id), "content": comment.content, "created_at": comment.created_at.isoformat()}
+
+
+@router.get("/workspaces/{workspace_id}/comments")
+async def get_comments(
+    workspace_id: UUID,
+    skip: int = 0,
+    limit: int = 50,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(WorkspaceComment)
+        .where(WorkspaceComment.workspace_id == workspace_id)
+        .order_by(desc(WorkspaceComment.created_at))
+        .offset(skip).limit(limit)
+    )
+    comments = result.scalars().all()
+    return [{"id": str(c.id), "content": c.content, "created_at": c.created_at.isoformat()} for c in comments]
+
+
+@router.get("/notifications")
+async def get_notifications(
+    unread_only: bool = False,
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    query = select(Notification).where(Notification.user_id == current_user.id)
+    if unread_only:
+        query = query.where(Notification.is_read == False)
+    query = query.order_by(desc(Notification.created_at)).offset(skip).limit(limit)
+    result = await db.execute(query)
+    notifications = result.scalars().all()
+    return [
+        {
+            "id": str(n.id),
+            "title": n.title,
+            "message": n.message,
+            "type": n.notification_type,
+            "is_read": n.is_read,
+            "created_at": n.created_at.isoformat(),
+        }
+        for n in notifications
+    ]
+
+
+@router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Notification).where(Notification.id == notification_id, Notification.user_id == current_user.id)
+    )
+    notification = result.scalar_one_or_none()
+    if notification:
+        notification.is_read = True
+        await db.commit()
+    return {"message": "Marked as read"}
+
+
+@router.websocket("/ws/{workspace_id}")
+async def workspace_websocket(websocket: WebSocket, workspace_id: str):
+    """Real-time WebSocket for workspace collaboration."""
+    await manager.connect(websocket, workspace_id)
+    try:
+        await websocket.send_text(json.dumps({"type": "connected", "workspace_id": workspace_id}))
+        while True:
+            data = await websocket.receive_text()
+            msg = json.loads(data)
+            await manager.broadcast({
+                "type": msg.get("type", "message"),
+                "content": msg.get("content", ""),
+                "timestamp": datetime.utcnow().isoformat(),
+            }, workspace_id)
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, workspace_id)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket, workspace_id)

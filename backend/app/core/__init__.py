@@ -1,0 +1,1 @@
+"""OmniSynth - Core Package"""
