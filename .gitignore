@@ -78,3 +78,8 @@ Desktop.ini
 *.bak
 *.backup
 *.tar.gz
+
+# SQLite database files
+*.db
+*.sqlite
+*.sqlite3

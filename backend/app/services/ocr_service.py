@@ -26,11 +26,12 @@ class OCRService:
 
     async def extract_text_from_pdf(self, file_path: str) -> Dict[str, Any]:
         """Extract text from PDF using pdfplumber + PyMuPDF fallback."""
-        result = {"text": "", "pages": 0, "method": "none", "metadata": {}}
+        result = {"text": "", "pages": 0, "page_count": 0, "method": "none", "metadata": {}}
         try:
             import pdfplumber
             with pdfplumber.open(file_path) as pdf:
                 result["pages"] = len(pdf.pages)
+                result["page_count"] = len(pdf.pages)
                 texts = []
                 for page in pdf.pages:
                     t = page.extract_text() or ""
@@ -49,6 +50,7 @@ class OCRService:
             import fitz
             doc = fitz.open(file_path)
             result["pages"] = len(doc)
+            result["page_count"] = len(doc)
             texts = []
             for page in doc:
                 texts.append(page.get_text())
@@ -63,7 +65,7 @@ class OCRService:
 
     async def extract_text_from_image(self, file_path: str, language: str = "en") -> Dict[str, Any]:
         """Extract text from image using EasyOCR with pytesseract fallback."""
-        result = {"text": "", "confidence": 0.0, "method": "none"}
+        result = {"text": "", "confidence": 0.0, "pages": 1, "page_count": 1, "method": "none"}
         try:
             reader = self._get_easyocr()
             if reader:
@@ -95,6 +97,42 @@ class OCRService:
 
         return result
 
+    async def extract_text_from_txt(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from plain text file."""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+            return {"text": text, "pages": 1, "page_count": 1, "method": "plaintext", "metadata": {}}
+        except Exception as e:
+            logger.error(f"Text file reading failed: {e}")
+            return {"text": "", "pages": 0, "page_count": 0, "method": "failed", "metadata": {}}
+
+    async def extract_text_from_docx(self, file_path: str) -> Dict[str, Any]:
+        """Extract text from DOCX file."""
+        try:
+            from docx import Document
+            doc = Document(file_path)
+            text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            return {"text": text, "pages": 1, "page_count": 1, "method": "docx", "metadata": {}}
+        except Exception as e:
+            logger.warning(f"DOCX processing failed: {e}")
+            return {"text": "", "pages": 0, "page_count": 0, "method": "failed", "metadata": {}}
+
+    async def extract_from_file(self, file_path: str, language: str = "en") -> Dict[str, Any]:
+        """Auto-detect file type and extract text. Main extraction method."""
+        ext = Path(file_path).suffix.lower()
+        if ext == ".pdf":
+            return await self.extract_text_from_pdf(file_path)
+        elif ext in [".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".gif", ".webp"]:
+            return await self.extract_text_from_image(file_path, language)
+        elif ext == ".txt":
+            return await self.extract_text_from_txt(file_path)
+        elif ext == ".docx":
+            return await self.extract_text_from_docx(file_path)
+        else:
+            # Try as text
+            return await self.extract_text_from_txt(file_path)
+
     async def process_document(self, file_path: str, file_type: str, language: str = "en") -> Dict[str, Any]:
         """Process document and extract all text content."""
         ext = Path(file_path).suffix.lower()
@@ -102,20 +140,11 @@ class OCRService:
             return await self.extract_text_from_pdf(file_path)
         elif ext in [".png", ".jpg", ".jpeg", ".tiff", ".bmp"] or file_type == "image":
             return await self.extract_text_from_image(file_path, language)
-        elif ext in [".txt"]:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-            return {"text": text, "pages": 1, "method": "plaintext", "metadata": {}}
-        elif ext in [".docx"]:
-            try:
-                from docx import Document
-                doc = Document(file_path)
-                text = "\n".join([p.text for p in doc.paragraphs])
-                return {"text": text, "pages": 1, "method": "docx", "metadata": {}}
-            except Exception as e:
-                logger.warning(f"DOCX processing failed: {e}")
-                return {"text": "", "pages": 0, "method": "failed", "metadata": {}}
-        return {"text": "", "pages": 0, "method": "unsupported", "metadata": {}}
+        elif ext in [".txt"] or file_type == "txt":
+            return await self.extract_text_from_txt(file_path)
+        elif ext in [".docx"] or file_type == "docx":
+            return await self.extract_text_from_docx(file_path)
+        return {"text": "", "pages": 0, "page_count": 0, "method": "unsupported", "metadata": {}}
 
     async def extract_structured_data(self, text: str) -> Dict[str, Any]:
         """Extract structured data like tables, references from text."""

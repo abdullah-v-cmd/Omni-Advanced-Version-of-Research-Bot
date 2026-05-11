@@ -5,10 +5,44 @@ SQLAlchemy ORM models for users and profiles
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, Boolean, DateTime, Text, Enum, ForeignKey, Integer
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.types import TypeDecorator, CHAR
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 import enum
+
+
+# Cross-database UUID type (works with both PostgreSQL and SQLite)
+class UUID(TypeDecorator):
+    """Platform-independent UUID type. Uses PostgreSQL's UUID type on PostgreSQL, CHAR(36) on others."""
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID())
+        else:
+            return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return value
+        if dialect.name == "postgresql":
+            return str(value)
+        else:
+            if isinstance(value, uuid.UUID):
+                return str(value)
+            return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return value
+        if not isinstance(value, uuid.UUID):
+            try:
+                value = uuid.UUID(str(value))
+            except (ValueError, AttributeError):
+                pass
+        return value
 
 
 class UserRole(str, enum.Enum):
@@ -28,7 +62,7 @@ class UserStatus(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False, index=True)
     username = Column(String(100), unique=True, nullable=False, index=True)
     hashed_password = Column(String(255), nullable=False)
@@ -60,12 +94,12 @@ class User(Base):
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
+    id = Column(UUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(), ForeignKey("users.id", ondelete="CASCADE"), unique=True, nullable=False)
     bio = Column(Text, nullable=True)
     institution = Column(String(255), nullable=True)
     department = Column(String(255), nullable=True)
-    research_interests = Column(Text, nullable=True)  # JSON string
+    research_interests = Column(Text, nullable=True)
     website = Column(String(500), nullable=True)
     linkedin_url = Column(String(500), nullable=True)
     orcid_id = Column(String(50), nullable=True)
@@ -73,7 +107,7 @@ class UserProfile(Base):
     total_research_hours = Column(Integer, default=0)
     total_documents = Column(Integer, default=0)
     total_citations = Column(Integer, default=0)
-    preferences = Column(Text, nullable=True)  # JSON string
+    preferences = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
