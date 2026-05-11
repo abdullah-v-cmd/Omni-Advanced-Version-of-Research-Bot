@@ -149,6 +149,99 @@ async def list_workspaces(
     return workspaces
 
 
+@router.get("/workspaces/{workspace_id}")
+async def get_workspace(
+    workspace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific workspace by ID."""
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
+    ws = ws_result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Check membership
+    mem_result = await db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == current_user.id,
+            WorkspaceMember.is_active == True,
+        )
+    )
+    if not mem_result.scalar_one_or_none() and not ws.is_public:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get members count
+    members_result = await db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.is_active == True,
+        )
+    )
+    members = members_result.scalars().all()
+
+    return {
+        "id": str(ws.id),
+        "name": ws.name,
+        "description": ws.description,
+        "is_public": ws.is_public,
+        "owner_id": str(ws.owner_id),
+        "member_count": len(members),
+        "created_at": ws.created_at.isoformat() if ws.created_at else None,
+        "updated_at": ws.updated_at.isoformat() if ws.updated_at else None,
+    }
+
+
+@router.put("/workspaces/{workspace_id}")
+async def update_workspace(
+    workspace_id: UUID,
+    data: WorkspaceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a workspace (owner only)."""
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
+    ws = ws_result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if ws.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only owner can update workspace")
+
+    values = data.model_dump(exclude_none=True)
+    values["updated_at"] = datetime.utcnow()
+    await db.execute(
+        update(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id).values(**values)
+    )
+    await db.commit()
+    return {"message": "Workspace updated", "id": str(workspace_id)}
+
+
+@router.delete("/workspaces/{workspace_id}")
+async def delete_workspace(
+    workspace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a workspace (owner only)."""
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
+    ws = ws_result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if ws.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only owner can delete workspace")
+
+    await db.delete(ws)
+    await db.commit()
+    return {"message": "Workspace deleted"}
+
+
 @router.post("/workspaces/{workspace_id}/members")
 async def add_member(
     workspace_id: UUID,
