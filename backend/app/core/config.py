@@ -38,9 +38,9 @@ class Settings(BaseSettings):
 
     # AI Models - Groq
     GROQ_API_KEY: str = ""
-    GROQ_MODEL_PRIMARY: str = "llama3-70b-8192"
-    GROQ_MODEL_SECONDARY: str = "mixtral-8x7b-32768"
-    GROQ_MODEL_FAST: str = "llama3-8b-8192"
+    GROQ_MODEL_PRIMARY: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL_SECONDARY: str = "llama-3.1-8b-instant"
+    GROQ_MODEL_FAST: str = "llama-3.1-8b-instant"
     GROQ_MAX_TOKENS: int = 4096
     GROQ_TEMPERATURE: float = 0.7
 

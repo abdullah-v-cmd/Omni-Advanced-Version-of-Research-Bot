@@ -61,7 +61,7 @@ export default function AdminPage() {
 
   const updateRole = async (id: string, role: string) => {
     try {
-      await apiFetch(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify({ role }) })
+      await apiFetch(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify({ role }) })
       setUsers(prev => prev.map(u => u.id === id ? { ...u, role } : u))
       toast.success('Role updated')
     } catch (e: any) { toast.error(e.message) }

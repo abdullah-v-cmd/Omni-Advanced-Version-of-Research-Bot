@@ -16,7 +16,8 @@ from app.models.research import Citation
 from app.middleware.auth import get_current_user
 from app.services.citation_service import citation_service
 from app.services.groq_service import groq_service
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from typing import Union
 from loguru import logger
 
 router = APIRouter()
@@ -26,7 +27,13 @@ class CitationGenerateRequest(BaseModel):
     style: str = "APA"
     title: str
     authors: List[str] = []
-    year: Optional[str] = None
+    year: Optional[Union[str, int]] = None
+
+    @field_validator('year', mode='before')
+    @classmethod
+    def coerce_year(cls, v):
+        if v is None: return None
+        return str(v)
     journal: Optional[str] = None
     volume: Optional[str] = None
     issue: Optional[str] = None
@@ -42,7 +49,13 @@ class CitationGenerateRequest(BaseModel):
 class AllStylesRequest(BaseModel):
     title: str
     authors: List[str] = []
-    year: Optional[str] = None
+    year: Optional[Union[str, int]] = None
+
+    @field_validator('year', mode='before')
+    @classmethod
+    def coerce_year(cls, v):
+        if v is None: return None
+        return str(v)
     journal: Optional[str] = None
     volume: Optional[str] = None
     issue: Optional[str] = None

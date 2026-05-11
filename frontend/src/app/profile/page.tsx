@@ -73,7 +73,7 @@ export default function ProfilePage() {
     setSavingPass(true)
     try {
       await apiFetch('/auth/change-password', {
-        method: 'PUT',
+        method: 'POST',
         body: JSON.stringify({ current_password: passwords.current_password, new_password: passwords.new_password })
       })
       toast.success('Password changed successfully!')

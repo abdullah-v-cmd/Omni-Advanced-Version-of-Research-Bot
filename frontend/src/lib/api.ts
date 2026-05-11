@@ -68,7 +68,7 @@ export const authApi = {
   updateMe: (data: any) => http.put('/auth/me', data),
   updateProfile: (data: any) => http.put('/auth/me/profile', data),
   changePassword: (data: { current_password: string; new_password: string }) =>
-    http.put('/auth/change-password', data),
+    http.post('/auth/change-password', data),
   refresh: (refresh_token: string) => http.post('/auth/refresh', { refresh_token }),
   logout: () => http.post('/auth/logout'),
 }
@@ -97,12 +97,12 @@ export const researchApi = {
   query: (data: { query: string; session_id?: string; use_hyde?: boolean; top_k?: number }) =>
     http.post('/research/query', data),
   uploadDocument: (sessionId: string, formData: FormData) =>
-    http.post(`/research/sessions/${sessionId}/documents`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
-  getDocuments: (sessionId: string) => http.get(`/research/sessions/${sessionId}/documents`),
-  getDrafts: (sessionId: string) => http.get(`/research/sessions/${sessionId}/drafts`),
-  createDraft: (sessionId: string, data: any) => http.post(`/research/sessions/${sessionId}/drafts`, data),
+    http.post('/research/documents/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } }),
+  getDocuments: (sessionId: string) => http.get(`/research/documents?session_id=${sessionId}`),
+  getDrafts: (sessionId: string) => http.get(`/research/drafts?session_id=${sessionId}`),
+  createDraft: (sessionId: string, data: any) => http.post('/research/drafts', { ...data, session_id: sessionId }),
   updateDraft: (sessionId: string, draftId: string, data: any) =>
-    http.put(`/research/sessions/${sessionId}/drafts/${draftId}`, data),
+    http.put(`/research/drafts/${draftId}`, data),
   generateContent: (data: { content_type: string; topic: string; context?: string; word_limit?: number }) =>
     http.post('/research/generate-content', data),
 }
@@ -110,8 +110,11 @@ export const researchApi = {
 // ─── Citations ──────────────────────────────────────────────────────
 export const citationsApi = {
   generate: (data: any) => http.post('/citations/generate', data),
-  generateAll: (data: any) => http.post('/citations/generate-all', data),
+  generateAll: (data: any) => http.post('/citations/generate-all-styles', data),
   extractFromText: (data: { text: string }) => http.post('/citations/extract-from-text', data),
+  // DOI lookup: extract text from DOI then generate citation
+  doiLookup: (doi: string, style = 'APA') =>
+    http.post('/citations/generate', { doi, style, title: `DOI: ${doi}` }),
   list: (skip = 0, limit = 50) => http.get(`/citations/?skip=${skip}&limit=${limit}`),
   delete: (id: string) => http.delete(`/citations/${id}`),
   styles: () => http.get('/citations/styles'),
@@ -162,13 +165,13 @@ export const collaborationApi = {
     http.post(`/collaboration/workspaces/${workspaceId}/comments`, { content }),
   getNotifications: () => http.get('/collaboration/notifications'),
   markNotificationRead: (id: string) =>
-    http.patch(`/collaboration/notifications/${id}/read`),
+    http.put(`/collaboration/notifications/${id}/read`),
 }
 
 // ─── Admin ──────────────────────────────────────────────────────────
 export const adminApi = {
   getUsers: (skip = 0, limit = 50) => http.get(`/admin/users?skip=${skip}&limit=${limit}`),
-  updateUser: (id: string, data: any) => http.patch(`/admin/users/${id}`, data),
+  updateUser: (id: string, data: any) => http.put(`/admin/users/${id}`, data),
   deleteUser: (id: string) => http.delete(`/admin/users/${id}`),
   getStats: () => http.get('/admin/stats'),
   getLogs: (level?: string) => http.get(`/admin/logs${level ? `?level=${level}` : ''}`),

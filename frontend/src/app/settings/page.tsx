@@ -16,7 +16,7 @@ export default function SettingsPage() {
   const [active, setActive] = useState('ai')
   const [saving, setSaving] = useState(false)
   const [settings, setSettings] = useState({
-    ai_model: 'llama3-70b-8192',
+    ai_model: 'llama-3.3-70b-versatile',
     use_hyde: true,
     temperature: 0.7,
     max_tokens: 4096,
@@ -56,7 +56,7 @@ export default function SettingsPage() {
     </div>
   )
 
-  const models = ['llama3-70b-8192', 'mixtral-8x7b-32768', 'llama3-8b-8192', 'gemma-7b-it']
+  const models = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama-3.1-70b-versatile', 'gemma2-9b-it']
 
   return (
     <DashboardLayout title="Settings">
