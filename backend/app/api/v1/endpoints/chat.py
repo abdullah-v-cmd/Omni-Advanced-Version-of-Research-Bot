@@ -5,7 +5,7 @@ Conversational AI with streaming, multi-turn memory, HyDE RAG
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, insert, update
 from typing import List, Optional
 from pydantic import BaseModel
 from datetime import datetime
@@ -42,6 +42,17 @@ class ConversationCreate(BaseModel):
     title: Optional[str] = None
 
 
+def _conv_to_dict(c):
+    return {
+        "id": str(c.id),
+        "title": c.title,
+        "model_used": c.model_used,
+        "message_count": len(c.messages) if c.messages else 0,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
 @router.post("/send")
 async def send_message(
     request: ChatRequest,
@@ -49,7 +60,7 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
 ):
     """Send a message to OmniSynth AI and get response."""
-    conversation = None
+    conversation_id = None
     history = []
 
     if request.conversation_id:
@@ -59,9 +70,11 @@ async def send_message(
                 AIConversation.user_id == current_user.id,
             )
         )
-        conversation = result.scalar_one_or_none()
-        if conversation and conversation.messages:
-            history = conversation.messages[-10:]  # Last 10 messages for context
+        conv = result.scalar_one_or_none()
+        if conv:
+            conversation_id = conv.id
+            if conv.messages:
+                history = conv.messages[-10:]  # Last 10 messages for context
 
     # Process with multi-agent orchestrator
     result = await orchestrator.route_and_execute(
@@ -75,37 +88,47 @@ async def send_message(
     agent_used = result.get("agent", "general")
     model_used = result.get("model_used", groq_service.primary_model)
 
-    # Update or create conversation
+    # Build updated message list
     new_messages = list(history) + [
         {"role": "user", "content": request.message, "timestamp": datetime.utcnow().isoformat()},
         {"role": "assistant", "content": answer, "agent": agent_used, "timestamp": datetime.utcnow().isoformat()},
     ]
+    now = datetime.utcnow()
 
-    if conversation:
-        conversation.messages = new_messages
-        conversation.updated_at = datetime.utcnow()
-        conversation.model_used = model_used
-    else:
-        conversation = AIConversation(
-            id=uuid.uuid4(),
-            user_id=current_user.id,
-            title=request.message[:60] + "..." if len(request.message) > 60 else request.message,
-            messages=new_messages,
-            model_used=model_used,
+    if conversation_id:
+        # Raw UPDATE — avoids ORM greenlet / readonly-db issues
+        await db.execute(
+            update(AIConversation)
+            .where(AIConversation.id == conversation_id)
+            .values(messages=new_messages, updated_at=now, model_used=model_used)
         )
-        db.add(conversation)
-
-    await db.commit()
-    await db.refresh(conversation)
+        await db.commit()
+    else:
+        # Raw INSERT for new conversation
+        conversation_id = uuid.uuid4()
+        title = request.message[:60] + "..." if len(request.message) > 60 else request.message
+        await db.execute(
+            insert(AIConversation).values(
+                id=conversation_id,
+                user_id=current_user.id,
+                title=title,
+                messages=new_messages,
+                model_used=model_used,
+                is_archived=False,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await db.commit()
 
     return {
-        "conversation_id": str(conversation.id),
+        "conversation_id": str(conversation_id),
         "message": answer,
         "agent": agent_used,
         "model": model_used,
         "sources": result.get("sources", []),
         "hyde_document": result.get("hyde_document"),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now.isoformat(),
     }
 
 
@@ -148,17 +171,7 @@ async def list_conversations(
         .offset(skip).limit(limit)
     )
     conversations = result.scalars().all()
-    return [
-        {
-            "id": str(c.id),
-            "title": c.title,
-            "model_used": c.model_used,
-            "message_count": len(c.messages) if c.messages else 0,
-            "created_at": c.created_at.isoformat(),
-            "updated_at": c.updated_at.isoformat() if c.updated_at else None,
-        }
-        for c in conversations
-    ]
+    return [_conv_to_dict(c) for c in conversations]
 
 
 @router.get("/conversations/{conversation_id}")
@@ -183,7 +196,7 @@ async def get_conversation(
         "title": conversation.title,
         "messages": conversation.messages or [],
         "model_used": conversation.model_used,
-        "created_at": conversation.created_at.isoformat(),
+        "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
     }
 
 

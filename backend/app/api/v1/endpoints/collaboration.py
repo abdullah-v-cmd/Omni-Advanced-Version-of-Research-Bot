@@ -4,7 +4,7 @@ Workspaces, members, comments, real-time collaboration
 """
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, insert, update
 from typing import List, Optional, Dict
 from uuid import UUID
 import uuid
@@ -14,11 +14,15 @@ from pydantic import BaseModel
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.collaboration import CollaborationWorkspace, WorkspaceMember, WorkspaceComment, WorkspaceRole, Notification
+from app.models.collaboration import (
+    CollaborationWorkspace, WorkspaceMember, WorkspaceComment,
+    WorkspaceRole, Notification,
+)
 from app.middleware.auth import get_current_user
 from loguru import logger
 
 router = APIRouter()
+
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -33,7 +37,10 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket, workspace_id: str):
         if workspace_id in self.active_connections:
-            self.active_connections[workspace_id].remove(websocket)
+            try:
+                self.active_connections[workspace_id].remove(websocket)
+            except ValueError:
+                pass
 
     async def broadcast(self, message: dict, workspace_id: str):
         if workspace_id in self.active_connections:
@@ -44,7 +51,10 @@ class ConnectionManager:
                 except Exception:
                     dead.append(connection)
             for d in dead:
-                self.active_connections[workspace_id].remove(d)
+                try:
+                    self.active_connections[workspace_id].remove(d)
+                except ValueError:
+                    pass
 
 
 manager = ConnectionManager()
@@ -73,26 +83,39 @@ async def create_workspace(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    workspace = CollaborationWorkspace(
-        id=uuid.uuid4(),
-        name=data.name,
-        description=data.description,
-        owner_id=current_user.id,
-        is_public=data.is_public,
-    )
-    db.add(workspace)
-    await db.flush()
+    workspace_id = uuid.uuid4()
+    now = datetime.utcnow()
 
-    member = WorkspaceMember(
-        id=uuid.uuid4(),
-        workspace_id=workspace.id,
-        user_id=current_user.id,
-        role=WorkspaceRole.OWNER,
+    # Raw INSERT — avoids ORM attribute tracking / greenlet issues
+    await db.execute(
+        insert(CollaborationWorkspace).values(
+            id=workspace_id,
+            name=data.name,
+            description=data.description,
+            owner_id=current_user.id,
+            is_public=data.is_public,
+            created_at=now,
+            updated_at=now,
+        )
     )
-    db.add(member)
+    await db.execute(
+        insert(WorkspaceMember).values(
+            id=uuid.uuid4(),
+            workspace_id=workspace_id,
+            user_id=current_user.id,
+            role=WorkspaceRole.OWNER,
+            is_active=True,
+            joined_at=now,
+        )
+    )
     await db.commit()
-    await db.refresh(workspace)
-    return {"id": str(workspace.id), "name": workspace.name, "description": workspace.description, "created_at": workspace.created_at.isoformat()}
+    return {
+        "id": str(workspace_id),
+        "name": data.name,
+        "description": data.description,
+        "is_public": data.is_public,
+        "created_at": now.isoformat(),
+    }
 
 
 @router.get("/workspaces")
@@ -101,14 +124,19 @@ async def list_workspaces(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(WorkspaceMember).where(WorkspaceMember.user_id == current_user.id, WorkspaceMember.is_active == True)
+        select(WorkspaceMember).where(
+            WorkspaceMember.user_id == current_user.id,
+            WorkspaceMember.is_active == True,
+        )
     )
     memberships = result.scalars().all()
     workspace_ids = [m.workspace_id for m in memberships]
 
     workspaces = []
     for wid in workspace_ids:
-        ws_result = await db.execute(select(CollaborationWorkspace).where(CollaborationWorkspace.id == wid))
+        ws_result = await db.execute(
+            select(CollaborationWorkspace).where(CollaborationWorkspace.id == wid)
+        )
         ws = ws_result.scalar_one_or_none()
         if ws:
             workspaces.append({
@@ -116,7 +144,7 @@ async def list_workspaces(
                 "name": ws.name,
                 "description": ws.description,
                 "is_public": ws.is_public,
-                "created_at": ws.created_at.isoformat(),
+                "created_at": ws.created_at.isoformat() if ws.created_at else None,
             })
     return workspaces
 
@@ -130,25 +158,29 @@ async def add_member(
     db: AsyncSession = Depends(get_db),
 ):
     # Verify workspace ownership
-    ws_result = await db.execute(select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id))
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
     workspace = ws_result.scalar_one_or_none()
     if not workspace or workspace.owner_id != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Find user by email
-    from app.models.user import User as UserModel
-    user_result = await db.execute(select(UserModel).where(UserModel.email == user_email))
+    user_result = await db.execute(select(User).where(User.email == user_email))
     target_user = user_result.scalar_one_or_none()
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    member = WorkspaceMember(
-        id=uuid.uuid4(),
-        workspace_id=workspace_id,
-        user_id=target_user.id,
-        role=role,
+    await db.execute(
+        insert(WorkspaceMember).values(
+            id=uuid.uuid4(),
+            workspace_id=workspace_id,
+            user_id=target_user.id,
+            role=role,
+            is_active=True,
+            joined_at=datetime.utcnow(),
+        )
     )
-    db.add(member)
     await db.commit()
     return {"message": f"Added {user_email} as {role}"}
 
@@ -160,27 +192,36 @@ async def add_comment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    comment = WorkspaceComment(
-        id=uuid.uuid4(),
-        workspace_id=workspace_id,
-        user_id=current_user.id,
-        content=data.content,
-        parent_id=data.parent_id,
+    comment_id = uuid.uuid4()
+    now = datetime.utcnow()
+
+    # Raw INSERT — avoids ORM attribute tracking / greenlet issues
+    await db.execute(
+        insert(WorkspaceComment).values(
+            id=comment_id,
+            workspace_id=workspace_id,
+            user_id=current_user.id,
+            content=data.content,
+            parent_id=data.parent_id,
+            created_at=now,
+            updated_at=now,
+        )
     )
-    db.add(comment)
     await db.commit()
-    await db.refresh(comment)
 
     # Broadcast to WebSocket clients
-    await manager.broadcast({
-        "type": "new_comment",
-        "comment_id": str(comment.id),
-        "user": current_user.username,
-        "content": data.content[:200],
-        "timestamp": datetime.utcnow().isoformat(),
-    }, str(workspace_id))
+    await manager.broadcast(
+        {
+            "type": "new_comment",
+            "comment_id": str(comment_id),
+            "user": current_user.username,
+            "content": data.content[:200],
+            "timestamp": now.isoformat(),
+        },
+        str(workspace_id),
+    )
 
-    return {"id": str(comment.id), "content": comment.content, "created_at": comment.created_at.isoformat()}
+    return {"id": str(comment_id), "content": data.content, "created_at": now.isoformat()}
 
 
 @router.get("/workspaces/{workspace_id}/comments")
@@ -198,7 +239,14 @@ async def get_comments(
         .offset(skip).limit(limit)
     )
     comments = result.scalars().all()
-    return [{"id": str(c.id), "content": c.content, "created_at": c.created_at.isoformat()} for c in comments]
+    return [
+        {
+            "id": str(c.id),
+            "content": c.content,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in comments
+    ]
 
 
 @router.get("/notifications")
@@ -222,7 +270,7 @@ async def get_notifications(
             "message": n.message,
             "type": n.notification_type,
             "is_read": n.is_read,
-            "created_at": n.created_at.isoformat(),
+            "created_at": n.created_at.isoformat() if n.created_at else None,
         }
         for n in notifications
     ]
@@ -234,13 +282,16 @@ async def mark_notification_read(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Notification).where(Notification.id == notification_id, Notification.user_id == current_user.id)
+    # Raw UPDATE — avoids ORM attribute tracking / greenlet issues
+    await db.execute(
+        update(Notification)
+        .where(
+            Notification.id == notification_id,
+            Notification.user_id == current_user.id,
+        )
+        .values(is_read=True)
     )
-    notification = result.scalar_one_or_none()
-    if notification:
-        notification.is_read = True
-        await db.commit()
+    await db.commit()
     return {"message": "Marked as read"}
 
 
@@ -249,15 +300,20 @@ async def workspace_websocket(websocket: WebSocket, workspace_id: str):
     """Real-time WebSocket for workspace collaboration."""
     await manager.connect(websocket, workspace_id)
     try:
-        await websocket.send_text(json.dumps({"type": "connected", "workspace_id": workspace_id}))
+        await websocket.send_text(
+            json.dumps({"type": "connected", "workspace_id": workspace_id})
+        )
         while True:
             data = await websocket.receive_text()
             msg = json.loads(data)
-            await manager.broadcast({
-                "type": msg.get("type", "message"),
-                "content": msg.get("content", ""),
-                "timestamp": datetime.utcnow().isoformat(),
-            }, workspace_id)
+            await manager.broadcast(
+                {
+                    "type": msg.get("type", "message"),
+                    "content": msg.get("content", ""),
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+                workspace_id,
+            )
     except WebSocketDisconnect:
         manager.disconnect(websocket, workspace_id)
     except Exception as e:

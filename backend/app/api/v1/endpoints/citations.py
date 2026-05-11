@@ -4,7 +4,7 @@ Multi-format citation generation, management, and export
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, insert
 from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
@@ -12,8 +12,7 @@ import uuid
 
 from app.core.database import get_db
 from app.models.user import User
-from app.models.research import Citation, Source
-from app.schemas.research import CitationCreate, CitationResponse
+from app.models.research import Citation
 from app.middleware.auth import get_current_user
 from app.services.citation_service import citation_service
 from app.services.groq_service import groq_service
@@ -58,6 +57,17 @@ class AIExtractRequest(BaseModel):
     style: str = "APA"
 
 
+def _citation_to_dict(c):
+    return {
+        "id": str(c.id),
+        "style": c.style,
+        "formatted_text": c.formatted_text,
+        "bibtex": c.bibtex,
+        "is_validated": c.is_validated,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
+
+
 @router.post("/generate", status_code=201)
 async def generate_citation(
     request: CitationGenerateRequest,
@@ -80,26 +90,29 @@ async def generate_citation(
     result = await citation_service.generate_citation(request.style, data)
 
     if request.save:
-        citation = Citation(
-            id=uuid.uuid4(),
-            user_id=current_user.id,
-            session_id=request.session_id,
-            style=request.style.upper(),
-            formatted_text=result["formatted"],
-            bibtex=result["bibtex"],
-            raw_data=data,
-            is_validated=True,
+        citation_id = uuid.uuid4()
+        now = datetime.utcnow()
+        # Raw INSERT — avoids ORM attribute tracking / greenlet issues
+        await db.execute(
+            insert(Citation).values(
+                id=citation_id,
+                user_id=current_user.id,
+                session_id=request.session_id,
+                style=request.style.upper(),
+                formatted_text=result["formatted"],
+                bibtex=result["bibtex"],
+                raw_data=data,
+                is_validated=True,
+                created_at=now,
+            )
         )
-        db.add(citation)
         await db.commit()
-        await db.refresh(citation)
-
         return {
-            "id": str(citation.id),
+            "id": str(citation_id),
             "style": result["style"],
             "formatted": result["formatted"],
             "bibtex": result["bibtex"],
-            "created_at": citation.created_at.isoformat(),
+            "created_at": now.isoformat(),
         }
 
     return {"style": result["style"], "formatted": result["formatted"], "bibtex": result["bibtex"]}
@@ -135,20 +148,19 @@ async def extract_citation_from_text(
     system_prompt = """Extract bibliographic information from the given text and return as JSON with fields:
     title, authors (list), year, journal, volume, issue, pages, doi, publisher, url.
     Return ONLY valid JSON, no other text."""
-    
+
     messages = [{"role": "user", "content": f"Extract citation data from:\n\n{request.text[:2000]}"}]
-    
+
     try:
         response = await groq_service.generate(messages, system_prompt=system_prompt, max_tokens=500, temperature=0.1)
         import json
-        # Try to extract JSON from response
         import re
         json_match = re.search(r'\{.*\}', response, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group())
         else:
             data = {"title": request.text[:100], "authors": [], "year": "2024"}
-        
+
         citation = await citation_service.generate_citation(request.style, data)
         return {"extracted_data": data, "citation": citation}
     except Exception as e:
@@ -156,7 +168,7 @@ async def extract_citation_from_text(
         raise HTTPException(status_code=500, detail=f"Failed to extract citation: {str(e)}")
 
 
-@router.get("/", response_model=List[CitationResponse])
+@router.get("/")
 async def list_citations(
     session_id: Optional[UUID] = None,
     style: Optional[str] = None,
@@ -172,9 +184,9 @@ async def list_citations(
     if style:
         query = query.where(Citation.style == style.upper())
     query = query.order_by(desc(Citation.created_at)).offset(skip).limit(limit)
-    
+
     result = await db.execute(query)
-    return result.scalars().all()
+    return [_citation_to_dict(c) for c in result.scalars().all()]
 
 
 @router.delete("/{citation_id}")
@@ -185,7 +197,9 @@ async def delete_citation(
 ):
     """Delete a saved citation."""
     result = await db.execute(
-        select(Citation).where(Citation.id == citation_id, Citation.user_id == current_user.id)
+        select(Citation).where(
+            Citation.id == citation_id, Citation.user_id == current_user.id
+        )
     )
     citation = result.scalar_one_or_none()
     if not citation:

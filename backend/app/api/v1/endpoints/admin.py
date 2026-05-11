@@ -4,7 +4,7 @@ System administration, user management, monitoring
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, update, insert
 from typing import List, Optional
 from uuid import UUID
 import uuid
@@ -50,7 +50,7 @@ async def list_all_users(
             "status": u.status,
             "is_active": u.is_active,
             "is_superuser": u.is_superuser,
-            "created_at": u.created_at.isoformat(),
+            "created_at": u.created_at.isoformat() if u.created_at else None,
             "last_login": u.last_login.isoformat() if u.last_login else None,
         }
         for u in users
@@ -70,16 +70,22 @@ async def update_user_admin(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Raw UPDATE — avoids ORM attribute tracking / greenlet issues
+    values = {}
     if data.is_active is not None:
-        user.is_active = data.is_active
+        values["is_active"] = data.is_active
     if data.is_superuser is not None:
-        user.is_superuser = data.is_superuser
+        values["is_superuser"] = data.is_superuser
     if data.role is not None:
-        user.role = data.role
+        values["role"] = data.role
     if data.status is not None:
-        user.status = data.status
+        values["status"] = data.status
 
-    await db.commit()
+    if values:
+        values["updated_at"] = datetime.utcnow()
+        await db.execute(update(User).where(User.id == user_id).values(**values))
+        await db.commit()
+
     return {"message": "User updated successfully"}
 
 
@@ -107,15 +113,11 @@ async def get_system_stats(
     db: AsyncSession = Depends(get_db),
 ):
     """Get comprehensive system statistics."""
-    # User stats
     total_users = (await db.execute(select(func.count(User.id)))).scalar() or 0
     active_users = (await db.execute(select(func.count(User.id)).where(User.is_active == True))).scalar() or 0
-    
-    # Research stats
     total_sessions = (await db.execute(select(func.count(ResearchSession.id)))).scalar() or 0
     total_documents = (await db.execute(select(func.count(Document.id)))).scalar() or 0
 
-    # Recent activity
     seven_days_ago = datetime.utcnow() - timedelta(days=7)
     recent_users = (await db.execute(
         select(func.count(User.id)).where(User.created_at >= seven_days_ago)
@@ -159,7 +161,7 @@ async def get_system_logs(
             "level": l.level,
             "message": l.message,
             "module": l.module,
-            "created_at": l.created_at.isoformat(),
+            "created_at": l.created_at.isoformat() if l.created_at else None,
         }
         for l in logs
     ]
@@ -173,22 +175,30 @@ async def create_superuser(
     db: AsyncSession = Depends(get_db),
 ):
     """Create initial superuser (only works if no superusers exist)."""
-    existing = (await db.execute(select(func.count(User.id)).where(User.is_superuser == True))).scalar() or 0
+    existing = (await db.execute(
+        select(func.count(User.id)).where(User.is_superuser == True)
+    )).scalar() or 0
     if existing > 0:
         raise HTTPException(status_code=403, detail="Superuser already exists")
 
     from app.core.security import get_password_hash
-    user = User(
-        id=uuid.uuid4(),
-        email=email,
-        username=username,
-        full_name="System Admin",
-        hashed_password=get_password_hash(password),
-        role=UserRole.ADMIN,
-        is_active=True,
-        is_superuser=True,
-        is_verified=True,
+    user_id = uuid.uuid4()
+    now = datetime.utcnow()
+    await db.execute(
+        insert(User).values(
+            id=user_id,
+            email=email,
+            username=username,
+            full_name="System Admin",
+            hashed_password=get_password_hash(password),
+            role=UserRole.ADMIN,
+            status=UserStatus.ACTIVE,
+            is_active=True,
+            is_superuser=True,
+            is_verified=True,
+            created_at=now,
+            updated_at=now,
+        )
     )
-    db.add(user)
     await db.commit()
-    return {"message": "Superuser created", "user_id": str(user.id)}
+    return {"message": "Superuser created", "user_id": str(user_id)}

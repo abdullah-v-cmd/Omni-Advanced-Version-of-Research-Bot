@@ -3,7 +3,6 @@ OmniSynth - Core Configuration
 Enterprise-grade settings management using Pydantic Settings
 """
 from pydantic_settings import BaseSettings
-from pydantic import AnyHttpUrl, validator
 from typing import List, Optional, Union
 import secrets
 import os
@@ -27,15 +26,15 @@ class Settings(BaseSettings):
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000", "*"]
 
-    # Database
-    DATABASE_URL: str = "postgresql+asyncpg://omnisynth:omnisynth_pass@postgres:5432/omnisynth_db"
-    DATABASE_POOL_SIZE: int = 10
-    DATABASE_MAX_OVERFLOW: int = 20
+    # Database - supports both PostgreSQL and SQLite
+    DATABASE_URL: str = "sqlite+aiosqlite:///./omnisynth.db"
+    DATABASE_POOL_SIZE: int = 5
+    DATABASE_MAX_OVERFLOW: int = 10
 
     # Redis
-    REDIS_URL: str = "redis://redis:6379/0"
-    CELERY_BROKER_URL: str = "redis://redis:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/2"
+    REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
     # AI Models - Groq
     GROQ_API_KEY: str = ""
@@ -51,11 +50,11 @@ class Settings(BaseSettings):
     HF_SUMMARIZATION_MODEL: str = "facebook/bart-large-cnn"
 
     # FAISS Vector DB
-    FAISS_INDEX_PATH: str = "/app/data/faiss_index"
+    FAISS_INDEX_PATH: str = "./data/faiss_index"
     FAISS_DIMENSION: int = 384
 
     # File Storage
-    UPLOAD_DIR: str = "/app/uploads"
+    UPLOAD_DIR: str = "./uploads"
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB
     ALLOWED_EXTENSIONS: List[str] = ["pdf", "png", "jpg", "jpeg", "docx", "txt"]
 
@@ -80,12 +79,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
-
-    @validator("BACKEND_CORS_ORIGINS", pre=True)
-    def assemble_cors_origins(cls, v):
-        if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",")]
-        return v
+        extra = "ignore"
 
 
 settings = Settings()

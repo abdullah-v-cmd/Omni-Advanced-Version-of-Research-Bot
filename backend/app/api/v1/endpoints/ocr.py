@@ -4,7 +4,7 @@ Multi-engine OCR: PDF, images, DOCX extraction
 """
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, insert, update
 from typing import Optional
 from uuid import UUID
 import uuid, os, aiofiles
@@ -34,7 +34,8 @@ async def upload_and_extract(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a file and extract text via OCR."""
-    ext = file.filename.split(".")[-1].lower() if file.filename else ""
+    filename = file.filename or "document.txt"
+    ext = filename.split(".")[-1].lower() if "." in filename else "txt"
     if ext not in settings.ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"File type .{ext} not allowed")
 
@@ -53,75 +54,106 @@ async def upload_and_extract(
 
     # Determine doc type
     type_map = {
-        "pdf": DocumentType.PDF, "png": DocumentType.IMAGE,
-        "jpg": DocumentType.IMAGE, "jpeg": DocumentType.IMAGE,
-        "docx": DocumentType.DOCX, "txt": DocumentType.TEXT,
+        "pdf": DocumentType.PDF,
+        "png": DocumentType.IMAGE,
+        "jpg": DocumentType.IMAGE,
+        "jpeg": DocumentType.IMAGE,
+        "docx": DocumentType.DOCX,
+        "txt": DocumentType.TXT,
     }
-    doc_type = type_map.get(ext, DocumentType.TEXT)
+    doc_type = type_map.get(ext, DocumentType.TXT)
 
-    # Create document record
+    # Create document record using raw INSERT
     session_uuid = uuid.UUID(session_id) if session_id else None
-    doc = Document(
-        id=doc_id,
-        user_id=current_user.id,
-        session_id=session_uuid,
-        title=file.filename or f"Document {doc_id}",
-        original_filename=file.filename,
-        file_path=file_path,
-        file_size=len(content),
-        doc_type=doc_type,
-        status=DocumentStatus.PROCESSING,
-        language=language,
+    now = datetime.utcnow()
+    await db.execute(
+        insert(Document).values(
+            id=doc_id,
+            user_id=current_user.id,
+            session_id=session_uuid,
+            title=filename,
+            original_filename=filename,
+            file_path=file_path,
+            file_size=len(content),
+            doc_type=doc_type,
+            status=DocumentStatus.PROCESSING,
+            language=language,
+            created_at=now,
+            updated_at=now,
+        )
     )
-    db.add(doc)
     await db.commit()
 
     # Extract text
     try:
-        result = await ocr_service.extract_from_file(file_path)
-        doc.extracted_text = result.get("text", "")
-        doc.page_count = result.get("page_count", 1)
-        doc.word_count = len(doc.extracted_text.split()) if doc.extracted_text else 0
-        doc.ocr_completed = True
+        result = await ocr_service.extract_from_file(file_path, language)
+        extracted_text = result.get("text", "")
+        page_count = result.get("page_count", 1)
+        word_count = len(extracted_text.split()) if extracted_text else 0
+
+        summary = None
+        keywords = None
+        faiss_index_id = None
+        is_indexed = False
 
         # Generate summary if requested
-        if generate_summary and doc.extracted_text:
-            doc.summary = await groq_service.summarize_text(doc.extracted_text[:6000])
-            doc.keywords = await groq_service.extract_keywords(doc.extracted_text[:3000])
+        if generate_summary and extracted_text:
+            summary = await groq_service.summarize_text(extracted_text[:6000])
+            keywords = await groq_service.extract_keywords(extracted_text[:3000])
 
         # Index embeddings
-        if doc.extracted_text:
-            chunks = embedding_service.chunk_text(doc.extracted_text)
+        if extracted_text:
+            chunks = embedding_service.chunk_text(extracted_text)
             if chunks:
                 await embedding_service.initialize()
                 ids = await embedding_service.add_documents(
                     texts=chunks,
                     metadatas=[{"document_id": str(doc_id), "chunk": i} for i in range(len(chunks))],
                 )
-                doc.faiss_index_id = str(ids[0]) if ids else None
-                doc.is_indexed = True
+                faiss_index_id = str(ids[0]) if ids else None
+                is_indexed = True
 
-        doc.status = DocumentStatus.PROCESSED
+        # Raw UPDATE — avoids ORM attribute tracking / greenlet issues
+        await db.execute(
+            update(Document)
+            .where(Document.id == doc_id)
+            .values(
+                extracted_text=extracted_text[:10000] if extracted_text else None,
+                page_count=page_count,
+                word_count=word_count,
+                ocr_completed=True,
+                summary=summary,
+                keywords=keywords,
+                faiss_index_id=faiss_index_id,
+                is_indexed=is_indexed,
+                status=DocumentStatus.PROCESSED,
+                updated_at=datetime.utcnow(),
+            )
+        )
         await db.commit()
-        await db.refresh(doc)
 
         return {
-            "id": str(doc.id),
-            "title": doc.title,
-            "filename": doc.original_filename,
-            "file_size": doc.file_size,
-            "doc_type": doc.doc_type,
-            "status": doc.status,
-            "word_count": doc.word_count,
-            "page_count": doc.page_count,
-            "is_indexed": doc.is_indexed,
-            "summary": doc.summary,
-            "keywords": doc.keywords,
-            "extracted_text_preview": doc.extracted_text[:500] if doc.extracted_text else "",
-            "created_at": doc.created_at.isoformat(),
+            "id": str(doc_id),
+            "title": filename,
+            "filename": filename,
+            "file_size": len(content),
+            "doc_type": doc_type,
+            "status": DocumentStatus.PROCESSED,
+            "word_count": word_count,
+            "page_count": page_count,
+            "is_indexed": is_indexed,
+            "summary": summary,
+            "keywords": keywords,
+            "extracted_text_preview": extracted_text[:500] if extracted_text else "",
+            "created_at": now.isoformat(),
         }
     except Exception as e:
-        doc.status = DocumentStatus.FAILED
+        # Raw UPDATE on failure — avoids ORM greenlet issues
+        await db.execute(
+            update(Document)
+            .where(Document.id == doc_id)
+            .values(status=DocumentStatus.FAILED, updated_at=datetime.utcnow())
+        )
         await db.commit()
         logger.error(f"OCR processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
@@ -154,7 +186,7 @@ async def list_documents(
             "is_indexed": d.is_indexed,
             "summary": d.summary,
             "keywords": d.keywords,
-            "created_at": d.created_at.isoformat(),
+            "created_at": d.created_at.isoformat() if d.created_at else None,
         }
         for d in docs
     ]
@@ -186,7 +218,7 @@ async def get_document(
         "page_count": doc.page_count,
         "language": doc.language,
         "is_indexed": doc.is_indexed,
-        "created_at": doc.created_at.isoformat(),
+        "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }
 
 
@@ -204,7 +236,10 @@ async def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     if doc.file_path and os.path.exists(doc.file_path):
-        os.remove(doc.file_path)
+        try:
+            os.remove(doc.file_path)
+        except Exception:
+            pass
     await db.delete(doc)
     await db.commit()
     return {"message": "Document deleted"}
@@ -213,11 +248,13 @@ async def delete_document(
 @router.post("/extract-text")
 async def extract_text_only(
     file: UploadFile = File(...),
+    language: str = Form("en"),
     current_user: User = Depends(get_current_user),
 ):
     """Extract text from a file without saving to DB."""
     content = await file.read()
-    ext = file.filename.split(".")[-1].lower() if file.filename else "txt"
+    filename = file.filename or "document.txt"
+    ext = filename.split(".")[-1].lower() if "." in filename else "txt"
 
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
@@ -225,7 +262,7 @@ async def extract_text_only(
         tmp_path = tmp.name
 
     try:
-        result = await ocr_service.extract_from_file(tmp_path)
+        result = await ocr_service.extract_from_file(tmp_path, language)
         return {
             "text": result.get("text", ""),
             "word_count": len(result.get("text", "").split()),
@@ -233,4 +270,7 @@ async def extract_text_only(
             "method": result.get("method", "auto"),
         }
     finally:
-        os.unlink(tmp_path)
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass

@@ -55,7 +55,6 @@ async def check_plagiarism(
     )
     db.add(report)
     await db.commit()
-    await db.refresh(report)
 
     return {
         "id": str(report.id),

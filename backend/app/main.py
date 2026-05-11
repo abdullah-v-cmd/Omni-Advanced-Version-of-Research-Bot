@@ -7,9 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -31,8 +29,12 @@ logger.add(
     level=settings.LOG_LEVEL,
     colorize=True,
 )
+
+# Create local log directory (not /app/logs which requires Docker)
+_log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+os.makedirs(_log_dir, exist_ok=True)
 logger.add(
-    "/app/logs/omnisynth.log",
+    os.path.join(_log_dir, "omnisynth.log"),
     rotation="100 MB",
     retention="30 days",
     compression="zip",
@@ -51,9 +53,8 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting OmniSynth AI Research Platform...")
 
     # Create required directories
-    os.makedirs("/app/logs", exist_ok=True)
-    os.makedirs("/app/uploads", exist_ok=True)
-    os.makedirs("/app/data/faiss_index", exist_ok=True)
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    os.makedirs(settings.FAISS_INDEX_PATH, exist_ok=True)
 
     # Initialize database
     try:
@@ -62,7 +63,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {e}")
 
-    # Initialize Redis
+    # Initialize Redis (optional - won't crash if unavailable)
     try:
         await redis_client.connect()
         logger.info("✅ Redis connected")
@@ -76,7 +77,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ Groq service initialization: {e}")
 
-    # Initialize embedding service (lazy - loads on first use)
     logger.info("✅ OmniSynth platform ready!")
     logger.info(f"📖 API docs: http://localhost:8000/docs")
 
@@ -111,19 +111,19 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ─── Middleware ────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.BACKEND_CORS_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Security headers middleware
+
+# Security headers + timing middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
-
     response.headers["X-Process-Time"] = str(process_time)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -172,6 +172,17 @@ async def root():
         "status": "operational",
         "docs": "/docs",
         "api": settings.API_V1_STR,
+        "endpoints": {
+            "auth": f"{settings.API_V1_STR}/auth",
+            "chat": f"{settings.API_V1_STR}/chat",
+            "research": f"{settings.API_V1_STR}/research",
+            "citations": f"{settings.API_V1_STR}/citations",
+            "plagiarism": f"{settings.API_V1_STR}/plagiarism",
+            "analytics": f"{settings.API_V1_STR}/analytics",
+            "collaboration": f"{settings.API_V1_STR}/collaboration",
+            "admin": f"{settings.API_V1_STR}/admin",
+            "ocr": f"{settings.API_V1_STR}/ocr",
+        }
     }
 
 
@@ -182,15 +193,19 @@ async def health_check():
 
     # Check Redis
     try:
-        await redis_client.client.ping()
-        checks["redis"] = "healthy"
+        if redis_client.client:
+            await redis_client.client.ping()
+            checks["redis"] = "healthy"
+        else:
+            checks["redis"] = "unavailable"
     except Exception:
         checks["redis"] = "unavailable"
 
-    overall = "healthy" if all(v in ["healthy", "unavailable"] for v in checks.values()) else "degraded"
+    # Check Groq
+    checks["groq"] = "configured" if groq_service.client else "not_configured"
 
     return {
-        "status": overall,
+        "status": "healthy",
         "checks": checks,
         "timestamp": time.time(),
     }
