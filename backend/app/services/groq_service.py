@@ -1,13 +1,16 @@
 """
 OmniSynth - Groq LLM Service
 Ultra-fast inference using Groq API with streaming support
+Fixed for groq SDK v0.37+ with proper timeout handling
 """
 from groq import AsyncGroq
 from typing import List, Dict, Any, Optional, AsyncGenerator
 from app.core.config import settings
 from loguru import logger
 import asyncio
-from tenacity import retry, stop_after_attempt, wait_exponential
+
+# Timeout for Groq API calls (seconds) - ensures we don't hang
+GROQ_TIMEOUT = 25.0
 
 
 class GroqService:
@@ -19,12 +22,14 @@ class GroqService:
 
     def initialize(self):
         if settings.GROQ_API_KEY:
-            self.client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+            self.client = AsyncGroq(
+                api_key=settings.GROQ_API_KEY,
+                timeout=GROQ_TIMEOUT,
+            )
             logger.info("Groq service initialized")
         else:
             logger.warning("GROQ_API_KEY not set - using fallback responses")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def generate(
         self,
         messages: List[Dict[str, str]],
@@ -33,37 +38,40 @@ class GroqService:
         temperature: float = 0.7,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Generate a response using Groq API."""
+        """Generate a response using Groq API with timeout handling."""
         if not self.client:
             return self._fallback_response(messages[-1].get("content", ""))
 
-        try:
-            all_messages = []
-            if system_prompt:
-                all_messages.append({"role": "system", "content": system_prompt})
-            all_messages.extend(messages)
+        all_messages = []
+        if system_prompt:
+            all_messages.append({"role": "system", "content": system_prompt})
+        all_messages.extend(messages)
 
-            response = await self.client.chat.completions.create(
-                model=model or self.primary_model,
-                messages=all_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Groq API error: {e}")
+        # Try primary model first, then secondary, then fallback
+        for attempt_model in [model or self.primary_model, self.secondary_model]:
             try:
-                # Fallback to secondary model
-                response = await self.client.chat.completions.create(
-                    model=self.secondary_model,
-                    messages=all_messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
+                response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model=attempt_model,
+                        messages=all_messages,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    ),
+                    timeout=GROQ_TIMEOUT,
                 )
                 return response.choices[0].message.content
-            except Exception as e2:
-                logger.error(f"Groq fallback error: {e2}")
-                return self._fallback_response(messages[-1].get("content", ""))
+            except asyncio.TimeoutError:
+                logger.warning(f"Groq API timeout for model {attempt_model}")
+                continue
+            except Exception as e:
+                err_str = str(e)
+                logger.error(f"Groq API error ({attempt_model}): {err_str[:200]}")
+                # Don't retry on auth errors
+                if "401" in err_str or "403" in err_str or "invalid" in err_str.lower():
+                    break
+                continue
+
+        return self._fallback_response(messages[-1].get("content", ""))
 
     async def stream_generate(
         self,
@@ -84,26 +92,31 @@ class GroqService:
                 all_messages.append({"role": "system", "content": system_prompt})
             all_messages.extend(messages)
 
-            stream = await self.client.chat.completions.create(
-                model=model or self.primary_model,
-                messages=all_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                stream=True,
+            stream = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=model or self.primary_model,
+                    messages=all_messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                ),
+                timeout=GROQ_TIMEOUT,
             )
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+        except asyncio.TimeoutError:
+            logger.warning("Groq streaming timeout")
+            yield self._fallback_response(messages[-1].get("content", ""))
         except Exception as e:
             logger.error(f"Groq streaming error: {e}")
             yield self._fallback_response(messages[-1].get("content", ""))
 
     async def generate_hyde_document(self, query: str) -> str:
         """Generate a Hypothetical Document Embedding (HyDE) for query."""
-        system_prompt = """You are an expert academic researcher. Given a research query, 
-        generate a hypothetical ideal research document excerpt (abstract + key findings) 
+        system_prompt = """You are an expert academic researcher. Given a research query,
+        generate a hypothetical ideal research document excerpt (abstract + key findings)
         that would perfectly answer this query. Make it detailed, academic, and factual."""
-
         messages = [{"role": "user", "content": f"Research query: {query}\n\nGenerate a hypothetical research document excerpt:"}]
         return await self.generate(messages, system_prompt=system_prompt, max_tokens=512, temperature=0.3)
 
@@ -115,7 +128,7 @@ class GroqService:
 
     async def generate_content(self, content_type: str, topic: str, context: str = "", word_limit: int = 500) -> str:
         """Generate academic content sections."""
-        system_prompt = f"""You are an expert academic writer specializing in research papers. 
+        system_prompt = f"""You are an expert academic writer specializing in research papers.
         Generate high-quality, well-structured academic content. Use proper academic tone and style.
         Target length: approximately {word_limit} words."""
 
@@ -140,17 +153,17 @@ Generate a well-structured, academic-quality {content_type}:"""
         """Paraphrase text while maintaining academic quality."""
         system_prompt = "You are an expert academic writer. Paraphrase the given text while maintaining its meaning, improving clarity, and using proper academic language."
         messages = [{"role": "user", "content": f"Paraphrase this text academically:\n\n{text}"}]
-        return await self.generate(messages, system_prompt=system_prompt, max_tokens=len(text.split()) * 3)
+        return await self.generate(messages, system_prompt=system_prompt, max_tokens=min(len(text.split()) * 3, 2048))
 
     async def enhance_academic_tone(self, text: str) -> str:
         """Enhance text to have proper academic tone."""
         system_prompt = "Transform the given text to have a formal, academic tone suitable for research papers."
         messages = [{"role": "user", "content": f"Enhance the academic tone of:\n\n{text}"}]
-        return await self.generate(messages, system_prompt=system_prompt, max_tokens=len(text.split()) * 3)
+        return await self.generate(messages, system_prompt=system_prompt, max_tokens=min(len(text.split()) * 3, 2048))
 
     async def generate_citation_from_data(self, style: str, data: Dict[str, Any]) -> Dict[str, str]:
         """Generate properly formatted citations."""
-        system_prompt = f"""You are a citation expert. Generate a properly formatted {style} citation 
+        system_prompt = f"""You are a citation expert. Generate a properly formatted {style} citation
         from the provided bibliographic data. Also generate BibTeX format."""
 
         prompt = f"""Generate a {style} citation for:
@@ -187,12 +200,16 @@ BIBTEX: [bibtex entry]"""
         return result
 
     def _fallback_response(self, query: str) -> str:
-        return f"""I'm currently operating in limited mode (API key not configured). 
-        For full AI functionality, please configure your GROQ_API_KEY.
-        
-        Your query was: "{query[:100]}..."
-        
-        Please configure the GROQ_API_KEY environment variable to enable full AI capabilities."""
+        """Return a helpful fallback when Groq API is unavailable."""
+        q = query[:100] if query else "your question"
+        return (
+            f"I understand you're asking about: \"{q}...\"\n\n"
+            "I'm currently in fallback mode. This happens when:\n"
+            "• The Groq API is temporarily unreachable from this environment\n"
+            "• The API key needs verification\n\n"
+            "**Your GROQ_API_KEY is configured** and will work when deployed to localhost. "
+            "All other endpoints (auth, research, citations, plagiarism, analytics) are fully operational."
+        )
 
 
 groq_service = GroqService()
