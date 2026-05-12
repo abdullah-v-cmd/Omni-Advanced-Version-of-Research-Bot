@@ -16,12 +16,15 @@ bcrypt==4.1.2
 
 # --- Fixed AI / LLM Stack ---
 langchain>=0.2.0
-langchain-core>=0.2.0
 langchain-community>=0.2.0
 langchain-groq>=0.1.15
+langchain-core>=0.2.0
 langgraph>=0.0.28
 groq>=0.4.2
+
+# Vector Database
 faiss-cpu>=1.8.0
+
 
 # --- REMOVE OR COMMENT OUT THESE FOR VERCEL ---
 # torch  <-- Too large for Vercel
