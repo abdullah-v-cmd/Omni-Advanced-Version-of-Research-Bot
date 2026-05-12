@@ -38,7 +38,7 @@ tokenizers==0.15.2
 huggingface-hub==0.21.3
 
 # Vector Database
-faiss-cpu==1.8.0
+faiss-cpu
 
 # OCR
 pytesseract==0.3.10
