@@ -40,6 +40,9 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     container_name: omnisynth_backend
     environment:
       - DATABASE_URL=postgresql+asyncpg://omnisynth:omnisynth_pass@postgres:5432/omnisynth_db
@@ -63,7 +66,6 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
-      interval: 30s
       interval: 30s
       timeout: 10s
       retries: 3
