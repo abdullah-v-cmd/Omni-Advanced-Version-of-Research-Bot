@@ -181,6 +181,21 @@ async def extract_citation_from_text(
         raise HTTPException(status_code=500, detail=f"Failed to extract citation: {str(e)}")
 
 
+@router.get("/styles")
+async def get_citation_styles():
+    """Get list of supported citation styles."""
+    return {
+        "styles": [
+            {"id": "APA", "name": "APA 7th Edition", "description": "American Psychological Association"},
+            {"id": "MLA", "name": "MLA 9th Edition", "description": "Modern Language Association"},
+            {"id": "IEEE", "name": "IEEE", "description": "Institute of Electrical and Electronics Engineers"},
+            {"id": "Chicago", "name": "Chicago 17th", "description": "Chicago Manual of Style"},
+            {"id": "Harvard", "name": "Harvard", "description": "Harvard Referencing System"},
+            {"id": "Vancouver", "name": "Vancouver", "description": "Vancouver System (Biomedical)"},
+        ]
+    }
+
+
 @router.get("/")
 async def list_citations(
     session_id: Optional[UUID] = None,
@@ -202,6 +217,24 @@ async def list_citations(
     return [_citation_to_dict(c) for c in result.scalars().all()]
 
 
+@router.get("/{citation_id}")
+async def get_citation(
+    citation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a specific saved citation by ID."""
+    result = await db.execute(
+        select(Citation).where(
+            Citation.id == citation_id, Citation.user_id == current_user.id
+        )
+    )
+    citation = result.scalar_one_or_none()
+    if not citation:
+        raise HTTPException(status_code=404, detail="Citation not found")
+    return _citation_to_dict(citation)
+
+
 @router.delete("/{citation_id}")
 async def delete_citation(
     citation_id: UUID,
@@ -220,18 +253,3 @@ async def delete_citation(
     await db.delete(citation)
     await db.commit()
     return {"message": "Citation deleted"}
-
-
-@router.get("/styles")
-async def get_citation_styles():
-    """Get list of supported citation styles."""
-    return {
-        "styles": [
-            {"id": "APA", "name": "APA 7th Edition", "description": "American Psychological Association"},
-            {"id": "MLA", "name": "MLA 9th Edition", "description": "Modern Language Association"},
-            {"id": "IEEE", "name": "IEEE", "description": "Institute of Electrical and Electronics Engineers"},
-            {"id": "Chicago", "name": "Chicago 17th", "description": "Chicago Manual of Style"},
-            {"id": "Harvard", "name": "Harvard", "description": "Harvard Referencing System"},
-            {"id": "Vancouver", "name": "Vancouver", "description": "Vancouver System (Biomedical)"},
-        ]
-    }
