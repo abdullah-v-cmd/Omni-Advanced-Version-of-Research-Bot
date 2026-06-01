@@ -1,12 +1,15 @@
 FROM python:3.11-slim
 
-# Force root execution and clear environment flags
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Clean, update with retries, and install dependencies
+# ← ADD THIS BLOCK
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80retries && \
+    echo 'Acquire::http::Timeout "120";' >> /etc/apt/apt.conf.d/80retries
+
 RUN apt-get clean && \
-    apt-get update --fix-missing && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update --fix-missing && \
     apt-get install -y --no-install-recommends \
         build-essential \
         libpq-dev \
