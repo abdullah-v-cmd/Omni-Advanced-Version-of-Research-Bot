@@ -19,22 +19,19 @@ RUN apt-get clean && \
         tesseract-ocr \
         tesseract-ocr-eng \
         poppler-utils \
-        libgl1-mesa-glx \
+        libgl1 \
         libglib2.0-0 \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY . .
 
-# Setup folders and permissions BEFORE dropping root
 RUN mkdir -p /app/logs /app/uploads /app/data/faiss_index && \
     useradd -m -u 1000 omnisynth && \
     chown -R omnisynth:omnisynth /app
