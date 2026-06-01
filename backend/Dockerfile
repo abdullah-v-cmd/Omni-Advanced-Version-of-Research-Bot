@@ -4,20 +4,19 @@ FROM python:3.11-slim
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Running a forced clean cache routine to reset the package indexes
-RUN apt-get clean && apt-get update --fix-missing
-
-# Installing core system utilities with no-recommends fallback
-RUN apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    libmagic1 \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    poppler-utils \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    curl \
+# Clean, update with retries, and install dependencies
+RUN apt-get clean && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        libpq-dev \
+        libmagic1 \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        poppler-utils \
+        libgl1 \
+        libglib2.0-0 \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
