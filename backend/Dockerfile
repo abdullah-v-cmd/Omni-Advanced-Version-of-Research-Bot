@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Force root user and non-interactive frontend during setup
+# Force root execution and clear environment flags
 USER root
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -26,10 +26,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application files
 COPY . .
 
-# Setup folders and permissions BEFORE dropping root
+# Setup directories and permissions before dropping down to low privileges
 RUN mkdir -p /app/logs /app/uploads /app/data/faiss_index && \
     useradd -m -u 1000 omnisynth && \
     chown -R omnisynth:omnisynth /app
@@ -38,4 +38,4 @@ USER omnisynth
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"] "--port", "8000", "--workers", "2"]
