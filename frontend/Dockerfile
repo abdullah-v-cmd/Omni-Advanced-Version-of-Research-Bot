@@ -9,7 +9,7 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV NEXT_PUBLIC_API_URL=http://backend:8000
+ENV NEXT_PUBLIC_API_URL=https://omni-advanced-version-of-research-bot-production.up.railway.app
 RUN npm run build
 RUN mkdir -p public
 
