@@ -14,17 +14,20 @@ RUN apt-get clean && \
         tesseract-ocr \
         tesseract-ocr-eng \
         poppler-utils \
-        libgl1 \
+        libgl1-mesa-glx \
         libglib2.0-0 \
         curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Force install aiosqlite directly to global system packages BEFORE creating workdir
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir aiosqlite
 
 WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY . .
