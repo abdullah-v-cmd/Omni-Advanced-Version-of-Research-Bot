@@ -1,10 +1,12 @@
-# --- Keep these (Standard FastAPI/LangChain) ---
-fastapi==0.109.2
-uvicorn[standard]==0.27.1
-python-multipart==0.0.9
-python-dotenv==1.0.1
-pydantic==2.6.1
-pydantic-settings==2.2.1
+# --- Core Frameworks (Loosened to fix the conflict) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+python-dotenv>=1.0.1
+pydantic>=2.7.0
+pydantic-settings>=2.2.1
+
+# --- Database & Auth ---
 sqlalchemy==2.0.27
 alembic==1.13.1
 asyncpg==0.29.0
@@ -25,13 +27,6 @@ groq>=0.4.2
 # Vector Database
 faiss-cpu>=1.8.0
 
-
-# --- REMOVE OR COMMENT OUT THESE FOR VERCEL ---
-# torch  <-- Too large for Vercel
-# transformers <-- Too large for Vercel
-# pytesseract <-- Requires system binary not available on Vercel
-# easyocr <-- Requires heavy downloads and system libs
-
 # --- Keep Utilities ---
 numpy==1.26.4
 scipy==1.12.0
@@ -39,3 +34,11 @@ httpx==0.27.0
 aiohttp==3.9.3
 loguru==0.7.2
 tenacity==8.2.3
+
+
+# --- REMOVE OR COMMENT OUT THESE FOR VERCEL ---
+# torch  <-- Too large for Vercel
+# transformers <-- Too large for Vercel
+# pytesseract <-- Requires system binary not available on Vercel
+# easyocr <-- Requires heavy downloads and system libs
+
