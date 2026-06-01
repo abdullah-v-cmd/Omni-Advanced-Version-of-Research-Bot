@@ -46,6 +46,17 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      - name: Install system dependencies for Python packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpq-dev \
+            libmagic1 \
+            tesseract-ocr \
+            poppler-utils \
+            libgl1-mesa-glx \
+            libglib2.0-0
+
       - name: Install dependencies
         run: |
           pip install --upgrade pip
@@ -113,6 +124,8 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host        # ← FIX 1: allow apt-get to reach internet
 
       - name: Build backend image
         uses: docker/build-push-action@v5
@@ -120,8 +133,11 @@ jobs:
           context: ./backend
           push: false
           tags: omnisynth-backend:${{ github.sha }}
+          platforms: linux/amd64           # ← FIX 2: force correct platform
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
       - name: Build frontend image
         uses: docker/build-push-action@v5
@@ -129,6 +145,7 @@ jobs:
           context: ./frontend
           push: false
           tags: omnisynth-frontend:${{ github.sha }}
+          platforms: linux/amd64           # ← FIX 2: force correct platform
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -170,8 +187,3 @@ jobs:
           echo "📦 Branch: ${{ github.ref_name }}"
           echo "👤 Actor: ${{ github.actor }}"
           echo "✅ All tests passed — ready for deployment"
-          echo ""
-          echo "To deploy manually:"
-          echo "  docker-compose pull"
-          echo "  docker-compose up -d --build"
-          echo "  docker-compose exec backend alembic upgrade head"
