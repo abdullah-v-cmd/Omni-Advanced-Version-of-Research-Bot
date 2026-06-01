@@ -200,6 +200,29 @@ async def get_conversation(
     }
 
 
+@router.get("/conversations/{conversation_id}/messages")
+async def get_conversation_messages(
+    conversation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the message history of a specific conversation."""
+    result = await db.execute(
+        select(AIConversation).where(
+            AIConversation.id == conversation_id,
+            AIConversation.user_id == current_user.id,
+        )
+    )
+    conversation = result.scalar_one_or_none()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return {
+        "conversation_id": str(conversation.id),
+        "messages": conversation.messages or [],
+        "message_count": len(conversation.messages) if conversation.messages else 0,
+    }
+
+
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: UUID,

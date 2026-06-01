@@ -242,6 +242,102 @@ async def delete_workspace(
     return {"message": "Workspace deleted"}
 
 
+@router.get("/workspaces/{workspace_id}/members")
+async def list_members(
+    workspace_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all members of a workspace."""
+    # Verify access
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
+    ws = ws_result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    mem_check = await db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == current_user.id,
+            WorkspaceMember.is_active == True,
+        )
+    )
+    if not mem_check.scalar_one_or_none() and not ws.is_public:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    result = await db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.is_active == True,
+        )
+    )
+    members = result.scalars().all()
+    return [
+        {
+            "id": str(m.id),
+            "user_id": str(m.user_id),
+            "role": m.role,
+            "joined_at": m.joined_at.isoformat() if m.joined_at else None,
+        }
+        for m in members
+    ]
+
+
+@router.get("/workspaces/{workspace_id}/conversations")
+async def list_workspace_conversations(
+    workspace_id: UUID,
+    skip: int = 0,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List AI conversations linked to a workspace session."""
+    from app.models.collaboration import AIConversation
+
+    # Verify workspace exists and user has access
+    ws_result = await db.execute(
+        select(CollaborationWorkspace).where(CollaborationWorkspace.id == workspace_id)
+    )
+    ws = ws_result.scalar_one_or_none()
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    mem_check = await db.execute(
+        select(WorkspaceMember).where(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == current_user.id,
+            WorkspaceMember.is_active == True,
+        )
+    )
+    if not mem_check.scalar_one_or_none() and not ws.is_public:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # AIConversation uses session_id (UUID) — query conversations whose
+    # session_id matches the workspace_id (shared UUID namespace for collab).
+    result = await db.execute(
+        select(AIConversation)
+        .where(
+            AIConversation.session_id == workspace_id,
+            AIConversation.is_archived == False,
+        )
+        .order_by(desc(AIConversation.updated_at))
+        .offset(skip).limit(limit)
+    )
+    convs = result.scalars().all()
+    return [
+        {
+            "id": str(c.id),
+            "title": c.title,
+            "model_used": c.model_used,
+            "message_count": len(c.messages) if c.messages else 0,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+        }
+        for c in convs
+    ]
+
+
 @router.post("/workspaces/{workspace_id}/members")
 async def add_member(
     workspace_id: UUID,
