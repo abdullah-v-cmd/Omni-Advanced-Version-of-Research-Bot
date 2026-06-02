@@ -4,6 +4,7 @@ Enterprise-grade AI Research Platform
 """
 import os
 import time
+from sqladmin import Admin
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +16,7 @@ from loguru import logger
 import sys
 
 from app.core.config import settings
-from app.core.database import init_db, close_db
+from app.core.database import init_db, close_db,engine
 from app.core.redis_client import redis_client
 from app.services.groq_service import groq_service
 from app.services.embedding_service import embedding_service
@@ -134,6 +135,12 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url="/openapi.json",
     lifespan=lifespan,
+)
+admin_panel = Admin(
+    app, 
+    engine, 
+    title="OmniSynth Enterprise Admin Panel", 
+    base_url="/admin"
 )
 
 # Rate limiting
