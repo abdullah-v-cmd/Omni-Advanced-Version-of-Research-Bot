@@ -46,6 +46,13 @@ class GroqService:
         if system_prompt:
             all_messages.append({"role": "system", "content": system_prompt})
         all_messages.extend(messages)
+        all_messages = [
+            {
+                "role": m.get("role") if isinstance(m, dict) else getattr(m, "role"),
+                "content": m.get("content") if isinstance(m, dict) else getattr(m, "content")
+            }
+            for m in all_messages
+        ]
 
         # Try primary model first, then secondary, then fallback
         for attempt_model in [model or self.primary_model, self.secondary_model]:
@@ -91,6 +98,13 @@ class GroqService:
             if system_prompt:
                 all_messages.append({"role": "system", "content": system_prompt})
             all_messages.extend(messages)
+            all_messages = [
+            {
+                "role": m.get("role") if isinstance(m, dict) else getattr(m, "role"),
+                "content": m.get("content") if isinstance(m, dict) else getattr(m, "content")
+            }
+            for m in all_messages
+            ]
 
             stream = await asyncio.wait_for(
                 self.client.chat.completions.create(
