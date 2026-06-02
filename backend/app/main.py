@@ -63,6 +63,38 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Database initialization failed: {e}")
 
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.models.research import Document, DocumentStatus
+        from sqlalchemy import select as sa_select
+        async with AsyncSessionLocal() as rebuild_db:
+            result = await rebuild_db.execute(
+                sa_select(Document).where(
+                    Document.extracted_text.isnot(None),
+                    Document.is_indexed == True
+                )   
+            )
+            documents = result.scalars().all()
+            if documents:
+                await embedding_service.initialize()
+                for doc in documents:
+                    if doc.extracted_text:
+                        await embedding_service.add_document(
+                            doc_id=str(doc.id),
+                            text=doc.extracted_text[:5000],
+                            metadata={
+                                "title": doc.title,
+                                "doc_type": str(doc.doc_type),
+                                "user_id": str(doc.user_id)
+                                },
+                        )
+                logger.info(f"✅ FAISS rebuilt with {len(documents)} documents")
+            else:
+                logger.info("ℹ️ No documents to reindex")
+    except Exception as e:
+        logger.warning(f"⚠️ FAISS rebuild failed: {e}")
+
+    
     # Initialize Redis (optional - won't crash if unavailable)
     try:
         await redis_client.connect()
