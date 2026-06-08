@@ -116,9 +116,9 @@ docker-compose exec backend alembic upgrade head
 
 | Service | URL |
 |---|---|
-| 🌐 Frontend | http://localhost |
-| 📡 Backend API | http://localhost/api/v1 |
-| 📖 API Docs | http://localhost/docs |
+| 🌐 Frontend | https://frontend-production-c81a.up.railway.app/ |
+| 📡 Backend API | https://omni-advanced-version-of-research-bot-production.up.railway.app/ |
+| 📖 API Docs | https://omni-advanced-version-of-research-bot-production.up.railway.app/docs#/Research/list_drafts_api_v1_research_drafts_get |
 | 📊 ReDoc | http://localhost/redoc |
 
 **Default Admin Account:**
